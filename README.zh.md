@@ -1,76 +1,88 @@
 # dsh-file-transfer
 
-从 DeepSeek Harness 的 Web 侧边栏直接下载与上传文件 —— 面向远程访问，而不只是本机。
+[English](README.md) · **简体中文** · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Русский](README.ru.md)
 
-[English](README.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![DSH 0.2.0-rc.2 verified](https://img.shields.io/badge/DeepSeek%20Harness-0.2.0--rc.2%20verified-4dabf7)](https://github.com/deepseek-ai/deepseek-harness)
+[![No build step](https://img.shields.io/badge/build-none-brightgreen)](#开发)
 
-## 为什么做这个
+**从 DSH 的 Web 侧边栏把文件下载出来，也把文件上传回工作区 —— 走的是远程连接，不只是本机。**
 
-DSH 的 Web 侧边栏自带工作区文件树和多种格式预览，但两个方向都是只读的：
+DeepSeek Harness 自带一个能浏览、能预览工作区的侧边栏文件树，但两个方向都是只读的。本插件补上的就是缺的那两个控件：
 
-- `workspaceFiles` 命名空间只有 `list` / `read` / `readBytes` / `stat` / `changes`，
-  没有任何写入口，所以没法往工作区目录上传文件。
-- 没有任何路由设置 `Content-Disposition`，所以预览到的文件没法保存下来 ——
-  只能回宿主机手动拷（`scp`、U 盘……）。
+| | |
+| --- | --- |
+| ![右侧边栏的文件标签页，上传按钮就在重新读取旁边](docs/screenshot-files.png) | ![预览中的文本文件，下载按钮在预览标题栏里](docs/screenshot-download.png) |
+| 文件树头部的 **⬆ 上传** —— 把选中的文件送进工作区 | 预览标题栏的 **⬇ 下载** —— 把打开的文件存到本机 |
 
-如果 harness 跑在无头主机上、你只通过网络访问它，这个缺口就是
-「打开报告点保存」和「登录服务器自己拷」之间的差别。
+## 为什么需要它
 
-本插件用两条流式路由 + 侧边栏两个按钮把它补上。
+如果 harness 跑在无头主机上、你只通过浏览器访问它，有两件日常小事是做不到的：
 
-## 你会得到什么
+- **文件拿不出来。** 侧边栏里没有任何地方设置 `Content-Disposition`，所以预览到的报告、PDF、图片都没法保存。最后只能回宿主机手动拷 —— `scp`、共享盘、U 盘。
+- **文件送不进去。** 工作区文件服务只暴露 `list` / `read` / `readBytes` / `stat` / `changes`，没有写入路径。你笔记本上的文件得另想办法传上去，agent 才能碰它。
 
-| 位置 | 控件 | 作用 |
-| --- | --- | --- |
-| 侧边栏文件预览标题栏 | `⬇ 下载` | 把正在预览的文件存到你的电脑，保留原文件名（中文名不乱码）。 |
-| 侧边栏文件树头部 | `⬆ 上传` | 把选中的文件送进工作区根目录；同名文件绝不覆盖。 |
+这个插件刻意做得很小，也刻意留在侧边栏里：它不另造一个文件浏览器，只是给你已经在用的那个补上「下载」和「上传」。
 
-![侧边栏文件标签页，上传按钮就在重新读取旁边](docs/screenshot-files.png)
+## 功能
 
-两条路由都是流式的：
+**⬇ 下载**
 
-- **下载**支持 `HEAD` 和单段 `Range`，所以大文件的续传、探测都可用，字节不会
-  先在宿主内存里攒成一整块。
-- **上传**把请求体直接管道写入磁盘，完成后再原子改名。端到端验证过一个 2 MiB
-  文件字节完全一致；没有 JSON/base64 信封，不会把内存撑爆、也不会让体积涨 33%。
+- 流式传输 —— 字节不会先在宿主内存里攒成一整块。
+- 支持 `HEAD` 和单段 `Range`，所以续传、探测都可用（`206 Partial Content`）。
+- `Content-Disposition: attachment` 带 RFC 5987 的 `filename*`，中文名和 emoji 名能原样落地，不会变成 `%E6%8A%A5...`。
+- 按扩展名给正确的 content type，并附 `nosniff` 与 `no-store`。
+- 自身不设体积上限。
+
+**⬆ 上传**
+
+- 裸字节直接流式写盘：没有 multipart 信封、没有 base64、不会让体积涨 33%。
+- 先写成同目录的 `.dsh-part-*`，流结束后才改名就位 —— 中断的上传不会在正式文件名下留下半截内容。
+- 绝不覆盖。再次上传 `report.pdf` 会变成 `report-1.pdf`。
+- 可选的体积上限（`maxUploadBytes`）：超限直接拒收，自己清理干净。
+
+**两者共同**
+
+- 认证由 DSH 自己的 Connection 层负责 —— 未认证请求在进入 handler 之前就被 `401` 挡掉。不用管 CSRF token，也不用另做登录。
+- 根目录白名单、`realpath` 解析、符号链接逃逸拒绝。
+- 沿用出货的错误信封（`{ ok: false, error: { code, message } }`），错误码稳定、可被程序判断。
 
 ## 安装
 
 ```sh
-dsh plugin --profile web add dsh-file-transfer
-```
+# 从 GitHub 安装
+dsh plugin --profile web add github:helixzz/dsh-file-transfer
 
-从本地目录安装（也就是本仓库）：
-
-```sh
+# 或从本地目录安装
 dsh plugin --profile web add /path/to/dsh-file-transfer
 ```
 
-包内声明了 `dsh.bundle.patch`，所以 `dsh plugin add` 会自动把它追加进 profile 的
-`dsh.profile.bundles` 层栈。重启 profile 并刷新页面：
+包内声明了 `dsh.bundle.patch`，所以 `dsh plugin add` 会自动把它追加进 profile 的 `dsh.profile.bundles` 层栈，不需要你手改 `cordis.patch.yml`。
+
+然后二选一：
 
 ```sh
 systemctl --user restart deepseek-harness.service   # 或你平时启动 dsh web 的方式
 ```
 
-打开一个会话、展开右侧边栏、点文件标签页：`⬆ 上传` 就在「重新读取」旁边。
-点开任意文件：`⬇ 下载` 就在「打开方式」旁边。
+……或者，如果你的 profile 跑在 `patchReload: live` 下，让加载器自己拾取新 bundle，刷新页面即可。（本插件在它诞生那台机器上就是这样部署的 —— 无需重启。）
 
-### 反向代理
+打开一个会话、展开右侧边栏、点「文件」标签页：`⬆ 上传` 就在「重新读取」旁边。打开任意文件：`⬇ 下载` 就在「打开方式」旁边。
 
-除了把请求体上限调到能容纳你的上传之外，无需额外配置。nginx 例：
+## 反向代理
+
+把请求体上限调到能容纳你的上传即可。nginx 例：
 
 ```nginx
 client_max_body_size 100m;
 ```
 
-认证不靠代理：路由注册在 DSH 的 Connection fetch 注册表上，未认证请求在进入
-handler 之前就被拒（`401`）。已实测：
+其他都不用配。认证在这里不是代理的职责：路由注册在 DSH 的 Connection fetch 注册表上，没有有效会话的请求根本到不了插件：
 
-```sh
-curl -o /dev/null -w '%{http_code}\n' \
-  'http://127.0.0.1:3900/api/dsh-file-transfer/download?path=/etc/hostname'
-# 401
+```console
+$ curl -o /dev/null -w '%{http_code}\n' \
+    'http://127.0.0.1:3900/api/dsh-file-transfer/download?path=/etc/hostname'
+401
 ```
 
 ## 配置
@@ -88,17 +100,17 @@ curl -o /dev/null -w '%{http_code}\n' \
 
 | 选项 | 默认值 | 含义 |
 | --- | --- | --- |
-| `roots` | `[]` | 非空时，下载与上传目标经 `realpath` 解析后必须落在其中之一，否则 `403 outside-roots`。 |
-| `allowUpload` | `true` | 置 false 可整体关闭上传路由（`403 upload-disabled`）。 |
-| `allowOverwrite` | `false` | 关闭时，同名文件会变成 `report-1.pdf`，不覆盖原件。 |
-| `maxUploadBytes` | `0` | 超出则 `413 upload-too-large`，并删掉写了一半的文件。 |
+| `roots` | `[]` | 非空时，下载与上传目标经 `realpath` 解析后（含符号链接）必须落在其中之一，否则 `403 outside-roots`。 |
+| `allowUpload` | `true` | 置 `false` 可整体关闭上传路由（`403 upload-disabled`）。 |
+| `allowOverwrite` | `false` | 关闭时同名文件绝不替换，改为使用空闲的 `name-N.ext`。 |
+| `maxUploadBytes` | `0` | 超出则以 `413 upload-too-large` 拒收，并删掉写了一半的文件。 |
 
-## API
+## HTTP API
 
-两条路由都在 `/api/` 下，且都要求已认证的 Connection。
+两条路由都在 `/api/` 下，都要求已认证的 Connection。终端、脚本、agent 都能直接用：
 
 ```sh
-# 下载（流式；加 -r 0-1023 即 Range 请求）
+# 下载（流式输出到 stdout；加 -r 0-1023 即 Range 请求）
 curl -O -J 'https://host/api/dsh-file-transfer/download?path=/abs/report.pdf'
 
 # 上传（裸字节，无 multipart 信封）
@@ -107,67 +119,78 @@ curl -X POST -H 'content-type: application/octet-stream' \
   'https://host/api/dsh-file-transfer/upload?dir=/abs/dir&name=report.pdf'
 ```
 
-错误沿用出货约定：
+上传成功时返回：
+
+```json
+{ "ok": true, "value": { "path": "/abs/dir/report.pdf", "name": "report.pdf", "bytes": 20481 } }
+```
+
+失败沿用 harness 其余部分同样的信封：
 
 ```json
 { "ok": false, "error": { "code": "outside-roots", "message": "path is outside the configured roots" } }
 ```
 
-错误码：`missing-path`、`not-absolute`、`not-found`、`not-a-file`、
-`not-a-directory`、`outside-roots`、`invalid-name`、`name-exhausted`、
-`empty-body`、`upload-disabled`、`upload-too-large`、`write-failed`。
+| 错误码 | 状态 | 含义 |
+| --- | --- | --- |
+| `missing-path` | 400 | 缺少 `path` / `dir` 查询参数。 |
+| `not-absolute` | 400 | 传了相对路径。 |
+| `not-a-file` / `not-a-directory` | 400 | 条目类型不对。 |
+| `invalid-name` | 400 | 提供的文件名被清洗后没有可用内容。 |
+| `not-found` | 404 | 路径不存在。 |
+| `outside-roots` | 403 | 解析后落在配置的 `roots` 之外。 |
+| `upload-disabled` | 403 | `allowUpload: false`。 |
+| `name-exhausted` | 409 | 10000 个候选名字都被占用了。 |
+| `upload-too-large` | 413 | 请求体超过 `maxUploadBytes`。 |
+| `write-failed` | 500 | 宿主写入失败。 |
 
 ## 安全模型
 
-- **认证**来自 Connection fetch 注册表 —— 和出货的 `/api/file` 路由同一套接缝，
-  没有任何匿名可达的路由。
-- **路径解析**对浏览器传来的每个路径都做 `realpath`，`..` 与符号链接都会先被展开，
-  再做 `roots` 检查。指向允许范围之外的符号链接会被拒绝，单元测试对此有断言。
-- **文件名**会被压成单个路径段：`../../etc/passwd` 变成 `passwd`，落在你指定的目录里。
-  已端到端验证。
-- **写入**先落到同目录的 `.dsh-part-*` 临时文件，流结束后才改名就位，所以中断的上传
-  不会在正式文件名下留下截断的内容。
+- **认证**来自 Connection fetch 注册表 —— 与出货的 `/api/file` 路由同一套接缝，没有任何匿名可达的路由。
+- **路径解析**对浏览器传来的每个路径都做 `realpath`，`..` 段与符号链接会在 `roots` 检查**之前**被展开。指向允许范围之外的符号链接会被拒绝，单元测试对此有断言。
+- **文件名**会被压成单个路径段：`../../etc/passwd` 变成 `passwd`，落在你指定的目录里。这条是端到端验证过的，不只是单元测试。
+- **写入**从读者视角看是原子的（先 `.dsh-part-*` 再改名），且除非你明确要求，绝不覆盖已有文件。
 
-插件以 harness 进程自身的权限运行；`roots` 是 harness 被多人共用时的收口手段。
-
-## 与其它插件的关系
-
-`sidebar.right.tab.document.actions` 和 `sidebar.right.tab.files.actions` 正是出货的
-「打开方式」控件所用的槽位 —— 那个控件在浏览器远程访问时毫无用处（它是在服务器上
-打开文件）。`⬇ 下载` 就是它旁边一直缺的那个按钮。
-
-如果你要的是**对话内**收发文件（`📎` 输入框附件、`send_files` 工具、静态共享目录），
-请看 [fengs2021/dsh-file-bridge](https://github.com/fengs2021/dsh-file-bridge)；
-本插件刻意留在侧边栏，服务 harness 本来就能读到的任意路径。
+插件以 harness 进程自身的权限运行。harness 被多人共用时，`roots` 是收窄暴露面的旋钮；`allowUpload: false` 可以彻底关掉写入路径。
 
 ## 兼容性
 
-基于 `@deepseek-ai/dsh` `0.2.0-rc.2`（撰写时的 npm `latest`）构建并验证。
+基于 `@deepseek-ai/dsh` **0.2.0-rc.2** 构建并验证。
 
-包内**刻意不声明** `peerDependencies`：过紧的 peer 区间正是 DSH 版本门拒绝一个
-本来可用的插件的原因（`dsh: installation rejected: ... is incompatible with dsh <version>`）。
-本插件只与 `connection` 服务和 Node 内置模块打交道。
+包内**刻意不声明 `peerDependencies`**。过紧的 peer 区间正是 DSH 版本门拒绝一个本来可用的插件的原因：
+
+```console
+dsh: installation rejected: Plugin <name> is incompatible with dsh 0.2.0-rc.2:
+     peerDependencies {"@deepseek-ai/dsh-client-connection":"^0.1.0"}
+```
+
+本插件只与 `connection` 服务和 Node 内置模块打交道。客户端侧也刻意不 import 那些在 0.2 里被移除的包（比如 `@deepseek-ai/dsh-client-runtime`），因为缺一个客户端依赖会让整个浏览器半边激活失败。
 
 ## 开发
 
-没有构建步骤：`lib/index.js`（ESM 宿主半）与 `lib/client.js`（手写的 CJS bundle，
-供 Web shell 的 `__ModuleLoader__` 加载）就是出货产物。
+没有构建步骤。`lib/index.js`（ESM 宿主半）和 `lib/client.js`（手写的 CJS bundle，供 Web shell 的 `__ModuleLoader__` 加载）就是出货产物，而且都提交进了仓库 —— 所以 `github:` 安装不需要 prepare 脚本。
 
 ```sh
 node --check lib/index.js && node --check lib/client.js
 node --test test/host.test.mjs
 ```
 
-单元测试用标准 `Request` 对象直接驱动导出的 handler，因此 Range、disposition、
-文件名消毒、根目录约束、覆盖行为、体积上限与符号链接逃逸都能在不起 profile 的
-情况下验证。
+单元测试用标准 `Request` 对象直接驱动导出的 handler —— Range、disposition、文件名消毒、根目录约束、覆盖行为、体积上限、符号链接逃逸全都能在不起 profile 的情况下验证。八个用例，不需要额外的测试夹具。
 
 ## 路线图
 
 - 目录打包成单个 ZIP 下载。
-- 上传到文件树当前所在的目录，以及拖拽上传。
-- 交付卡片上加下载控件（需要公开路径，因为 `deliverables.file.actions` 目前只给
-  一个内部 action URL）。
+- 上传到文件树当前所在的目录（而不只是工作区根），以及拖拽上传。
+- 交付卡片上的下载控件。`deliverables.file.actions` 目前只给一个内部 action URL、不给文件系统路径，所以这一项需要上游先提供抓手。
+
+## 参与贡献
+
+欢迎提 issue 和 PR。动手之前有两件事值得知道：
+
+- **跑测试。** `node --test test/host.test.mjs` 必须保持全绿。
+- **保持各语言 README 同步。** 这份文档有六种语言，它们描述的是同一个插件；如果你改了行为，请更新你能写的那份翻译并在 PR 里说明，其余的可以随后跟上。
+
+也请克制功能边界。这个插件的全部价值在于它在 DSH 自带文件浏览器之上稳定地做两件事，而不是长成一个 IDE。
 
 ## 许可
 
