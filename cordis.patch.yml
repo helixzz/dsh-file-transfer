@@ -1,0 +1,17 @@
+# The dsh-file-transfer bundle patch: mounts the host half.
+#
+# Declared through `dsh.bundle.patch` in package.json, so
+# `dsh plugin --profile <name> add dsh-file-transfer` appends this package to
+# the profile's `dsh.profile.bundles` layer stack and the row mounts on the
+# next boot — no manual cordis.patch.yml edit needed.
+#
+# Tune the options from your own profile layer instead of editing this file:
+#
+#   - id: file-transfer
+#     config:
+#       roots: []            # allow-list of absolute roots; [] means unrestricted
+#       allowUpload: true
+#       maxUploadBytes: 0    # 0 means no limit
+- insert:
+    - id: file-transfer
+      name: 'dsh-file-transfer'
