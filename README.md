@@ -6,14 +6,14 @@
 [![DSH 0.2.0-rc.2 verified](https://img.shields.io/badge/DeepSeek%20Harness-0.2.0--rc.2%20verified-4dabf7)](https://github.com/deepseek-ai/deepseek-harness)
 [![No build step](https://img.shields.io/badge/build-none-brightgreen)](#development)
 
-**Download files out of the DSH Web sidebar, and upload files back into the workspace — over a remote connection, not just on localhost.**
+**Download files out of the DSH Web sidebar, upload files back into the workspace, and zip a whole folder — over a remote connection, not just on localhost.**
 
-DeepSeek Harness ships a sidebar file tree that can browse and preview your workspace, but it is read-only in both directions. This plugin adds the two controls that were missing:
+DeepSeek Harness ships a sidebar file tree that can browse and preview your workspace, but it is read-only in both directions. This plugin adds the controls that were missing:
 
 | | |
 | --- | --- |
-| ![The file tab of the right sidebar, with the Upload control next to the reload button](docs/screenshot-files.png) | ![A previewed text file, with the Download control in the preview header](docs/screenshot-download.png) |
-| **⬆ Upload** in the file tree header — sends picked files into the workspace | **⬇ Download** in the preview header — saves the open file to your machine |
+| ![The file tab of the right sidebar, with Upload, the target folder and ZIP controls next to the reload button](docs/screenshot-files.png) | ![A previewed text file, with the Download control in the preview header](docs/screenshot-download.png) |
+| **⬆ Upload** and **🗜 ZIP** in the file tree header — send files into the folder you picked, or take the whole folder away | **⬇ Download** in the preview header — saves the open file to your machine |
 
 ## Why this exists
 
@@ -40,6 +40,15 @@ This plugin is deliberately small and stays in the sidebar: it does not invent a
 - Written to a `.dsh-part-*` sibling first and renamed into place only after the stream completes, so an interrupted upload can never leave a truncated file under the real name.
 - Never overwrites. A second `report.pdf` becomes `report-1.pdf`.
 - Optional size cap (`maxUploadBytes`) that rejects oversized bodies and cleans up after itself.
+- **Targets the folder you are looking at**, not just the workspace root: click a folder row (or a file, to use its parent) and the button follows; the chip beside it always names the destination.
+- **Drag files onto the tree.** Dropping on a folder row uploads into that folder, dropping on a file row uses its parent, dropping on empty space uses the root. The row under the pointer is outlined while you drag.
+
+**🗜 ZIP a folder**
+
+- One click turns the selected folder into a single archive: recursive, CJK names preserved, empty directories kept, symlinks skipped.
+- Streamed and deflated as it goes — the archive never sits in host memory as one blob.
+- Written against the ZIP specification directly (data descriptors plus the UTF-8 name flag), so the plugin keeps shipping with zero runtime dependencies.
+- Capped at 20 000 files by default, with an optional byte budget; a single entry over 4 GiB is refused as ZIP32 cannot express it.
 
 **Both**
 
@@ -67,7 +76,7 @@ systemctl --user restart deepseek-harness.service   # or however you run dsh web
 
 …or, if your profile runs with `patchReload: live`, let the loader pick the new bundle up and simply reload the page. (That is how this plugin is deployed on the machine it was written for — no restart needed.)
 
-Open a session, expand the right sidebar, and pick the **file** tab. `⬆ Upload` sits next to the reload button. Open any file and `⬇ Download` sits next to the "open with" control.
+Open a session, expand the right sidebar, and pick the **file** tab. `⬆ Upload` and `🗜 ZIP` sit next to the reload button, and the chip between them names the folder they will act on. Open any file and `⬇ Download` sits next to the "open with" control.
 
 ## Behind a reverse proxy
 
@@ -92,22 +101,28 @@ Every option is optional. Override them from your own profile layer rather than 
 ```yaml
 - id: file-transfer
   config:
-    roots: []            # allow-list of absolute roots; [] means unrestricted
+    roots: []              # allow-list of absolute roots; [] means unrestricted
     allowUpload: true
     allowOverwrite: false
-    maxUploadBytes: 0    # 0 means no limit
+    maxUploadBytes: 0      # 0 means no limit
+    archiveMaxFiles: 20000
+    archiveMaxBytes: 0     # 0 means no limit
+    compressionLevel: 6    # 0-9, deflate level used by the ZIP route
 ```
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `roots` | `[]` | When non-empty, every download and upload target must resolve — symlinks included — inside one of these roots. Anything else gets `403 outside-roots`. |
+| `roots` | `[]` | When non-empty, every download, upload and archive target must resolve — symlinks included — inside one of these roots. Anything else gets `403 outside-roots`. |
 | `allowUpload` | `true` | Set to `false` to remove the upload route entirely (`403 upload-disabled`). |
 | `allowOverwrite` | `false` | When off, an existing name is never replaced; a free `name-N.ext` is used instead. |
 | `maxUploadBytes` | `0` | Reject larger bodies with `413 upload-too-large` and delete the partial file. |
+| `archiveMaxFiles` | `20000` | Refuse to zip a tree with more entries (`413 archive-too-large`). |
+| `archiveMaxBytes` | `0` | Refuse to zip a tree whose files exceed this budget; `0` disables the check. |
+| `compressionLevel` | `6` | Deflate level for archive entries; `0` stores without compressing. |
 
 ## HTTP API
 
-Two routes, both under `/api/`, both requiring an authenticated Connection. Useful from a terminal, a script, or an agent:
+Three routes, all under `/api/`, all requiring an authenticated Connection. Useful from a terminal, a script, or an agent:
 
 ```sh
 # download (streams to stdout; add -r 0-1023 for a range)
@@ -117,6 +132,9 @@ curl -O -J 'https://host/api/dsh-file-transfer/download?path=/abs/report.pdf'
 curl -X POST -H 'content-type: application/octet-stream' \
   --data-binary @report.pdf \
   'https://host/api/dsh-file-transfer/upload?dir=/abs/dir&name=report.pdf'
+
+# zip a directory (any name; defaults to the directory basename)
+curl -OJ 'https://host/api/dsh-file-transfer/archive?path=/abs/reports'
 ```
 
 A successful upload answers:
@@ -142,6 +160,9 @@ Failures use the same envelope as the rest of the harness:
 | `upload-disabled` | 403 | `allowUpload: false`. |
 | `name-exhausted` | 409 | 10 000 candidate names were all taken. |
 | `upload-too-large` | 413 | Body exceeded `maxUploadBytes`. |
+| `archive-too-large` | 413 | Tree exceeded `archiveMaxFiles` / `archiveMaxBytes`, or one entry exceeds ZIP32. |
+| `archive-unreadable` | 413 | A directory in the tree could not be read. |
+| `archive-failed` | 500 | The archive could not be produced. |
 | `write-failed` | 500 | The host could not write the file. |
 
 ## Security model
@@ -150,6 +171,7 @@ Failures use the same envelope as the rest of the harness:
 - **Path resolution** runs every browser-supplied path through `realpath`, so `..` segments and symlinks are resolved *before* the `roots` check. A symlink pointing outside an allowed root is refused, and a unit test asserts it.
 - **File names** are reduced to a single path segment: `../../etc/passwd` becomes `passwd` and lands inside the chosen directory. Verified end to end, not just in a unit test.
 - **Writes** are atomic from the reader's point of view (`.dsh-part-*` then rename), and never clobber an existing file unless you ask for it.
+- **Archives** are built from a directory walk that skips symlinks and special files, so a link inside a workspace cannot pull an outside file into the download. The walk is capped before any bytes are streamed.
 
 The plugin runs with the harness process's own privileges. `roots` is the knob to hand out a narrower surface when the harness is shared, and `allowUpload: false` turns the write path off completely.
 
@@ -175,12 +197,13 @@ node --check lib/index.js && node --check lib/client.js
 node --test test/host.test.mjs
 ```
 
-The unit tests drive the exported handlers with standard `Request` objects — so ranges, dispositions, name sanitising, root enforcement, overwrite behaviour, size limits and symlink escapes are all checked without booting a profile. Eight cases, no fixture harness required.
+The unit tests drive the exported handlers with standard `Request` objects — so ranges, dispositions, name sanitising, root enforcement, overwrite behaviour, size limits, symlink escapes and archive caps are all checked without booting a profile. Fifteen cases; the ZIP ones are validated by Python's `zipfile.testzip()` entry by entry.
+
+The tree controls have no automated browser tests: they read the shipped file tree's `data-files-entry` / `data-files-path` attributes, which is also why they keep working if the tree's internals change. If you touch that wiring, check it by hand against a real workspace.
 
 ## Roadmap
 
-- Directory download as a single ZIP.
-- Upload into the directory the tree currently shows (not just the workspace root), plus drag-and-drop.
+- Multi-select: zip or download several rows at once.
 - A download control on delivered-file cards. `deliverables.file.actions` currently hands out an internal action URL rather than a filesystem path, so this needs an upstream affordance.
 
 ## Contributing
@@ -190,7 +213,7 @@ Issues and pull requests are welcome. Two things to know before you send one:
 - **Run the tests.** `node --test test/host.test.mjs` must stay green.
 - **Keep translations in sync.** The README exists in six languages and they are meant to describe the same plugin; if you change behaviour, update the translation you can write and say so in the PR, and the rest can follow.
 
-Please keep the surface small. This plugin's whole value is that it does two things predictably on top of DSH's own file browser, not that it grows into an IDE.
+Please keep the surface small. This plugin's whole value is that it does a few things predictably on top of DSH's own file browser, not that it grows into an IDE.
 
 ## License
 

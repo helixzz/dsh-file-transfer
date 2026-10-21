@@ -1,6 +1,6 @@
 {
   "name": "dsh-file-transfer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Download and upload files from the DSH Web sidebar: streaming download/upload routes plus sidebar action buttons that work over a remote (reverse-proxied) connection.",
   "type": "module",
   "main": "lib/index.js",

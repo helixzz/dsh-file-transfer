@@ -6,14 +6,14 @@
 [![DSH 0.2.0-rc.2 verified](https://img.shields.io/badge/DeepSeek%20Harness-0.2.0--rc.2%20verified-4dabf7)](https://github.com/deepseek-ai/deepseek-harness)
 [![No build step](https://img.shields.io/badge/build-none-brightgreen)](#development)
 
-**Descarga archivos desde la barra lateral de DSH Web y vuelve a subirlos al workspace — por una conexión remota, no solo en localhost.**
+**Descarga archivos desde la barra lateral de DSH Web, vuelve a subirlos al workspace y comprime una carpeta entera en un ZIP — por una conexión remota, no solo en localhost.**
 
-DeepSeek Harness incluye un árbol de archivos en la barra lateral con el que puedes explorar y previsualizar tu workspace, pero es de solo lectura en ambos sentidos. Este plugin agrega los dos controles que faltaban:
+DeepSeek Harness incluye un árbol de archivos en la barra lateral con el que puedes explorar y previsualizar tu workspace, pero es de solo lectura en ambos sentidos. Este plugin agrega los controles que faltaban:
 
 | | |
 | --- | --- |
-| ![La pestaña de archivos de la barra lateral derecha, con el control Upload junto al botón de recarga](docs/screenshot-files.png) | ![Un archivo de texto en previsualización, con el control Download en el encabezado de la vista previa](docs/screenshot-download.png) |
-| **⬆ Upload** en el encabezado del árbol de archivos — envía los archivos seleccionados al workspace | **⬇ Download** en el encabezado de la vista previa — guarda el archivo abierto en tu equipo |
+| ![La pestaña de archivos de la barra lateral derecha, con los controles Upload, carpeta de destino y ZIP junto al botón de recarga](docs/screenshot-files.png) | ![Un archivo de texto en previsualización, con el control Download en el encabezado de la vista previa](docs/screenshot-download.png) |
+| **⬆ Upload** y **🗜 ZIP** en el encabezado del árbol de archivos — envía archivos a la carpeta que elegiste, o llévate la carpeta entera | **⬇ Download** en el encabezado de la vista previa — guarda el archivo abierto en tu equipo |
 
 ## Por qué existe
 
@@ -40,6 +40,15 @@ Este plugin es deliberadamente pequeño y se queda en la barra lateral: no inven
 - Se escribe primero en un hermano `.dsh-part-*` y solo se renombra a su sitio cuando el stream termina, así que una carga interrumpida nunca puede dejar un archivo truncado bajo el nombre real.
 - Nunca sobrescribe. Un segundo `report.pdf` pasa a ser `report-1.pdf`.
 - Límite de tamaño opcional (`maxUploadBytes`) que rechaza los cuerpos demasiado grandes y limpia lo que dejó atrás.
+- **Apunta a la carpeta que estás viendo**, no solo a la raíz del workspace: haz clic en la fila de una carpeta (o en un archivo, para usar su carpeta padre) y el botón la sigue; el chip de al lado siempre indica el destino.
+- **Arrastra archivos al árbol.** Soltar sobre la fila de una carpeta sube el archivo a esa carpeta, soltar sobre la fila de un archivo usa su carpeta padre y soltar sobre un espacio vacío usa la raíz. La fila bajo el puntero queda resaltada mientras arrastras.
+
+**🗜 Comprimir una carpeta en ZIP**
+
+- Un clic convierte la carpeta seleccionada en un único archivo comprimido: recursivo, nombres en CJK preservados, directorios vacíos conservados, symlinks omitidos.
+- Se transmite y se comprime con deflate sobre la marcha: el archivo comprimido nunca se queda en la memoria del host como un solo bloque.
+- Se escribe directamente contra la especificación ZIP (descriptores de datos más la bandera UTF-8 de nombre), así que el plugin se sigue publicando con cero dependencias en tiempo de ejecución.
+- Tope de 20 000 archivos por defecto, con un presupuesto opcional en bytes; una sola entrada de más de 4 GiB se rechaza porque ZIP32 no puede expresarla.
 
 **Ambas**
 
@@ -67,7 +76,7 @@ systemctl --user restart deepseek-harness.service   # or however you run dsh web
 
 …o, si tu perfil se ejecuta con `patchReload: live`, dejas que el loader tome el nuevo bundle y simplemente recargas la página. (Así está desplegado este plugin en la máquina para la que se escribió: sin necesidad de reiniciar.)
 
-Abre una sesión, despliega la barra lateral derecha y elige la pestaña **file**. `⬆ Upload` está junto al botón de recarga. Abre cualquier archivo y `⬇ Download` aparece al lado del control de "abrir con".
+Abre una sesión, despliega la barra lateral derecha y elige la pestaña **file**. `⬆ Upload` y `🗜 ZIP` están junto al botón de recarga, y el chip que hay entre ellos indica la carpeta sobre la que van a actuar. Abre cualquier archivo y `⬇ Download` aparece al lado del control de "abrir con".
 
 ## Detrás de un proxy inverso
 
@@ -92,22 +101,28 @@ Todas las opciones son opcionales. Sobrescríbelas desde tu propia capa de perfi
 ```yaml
 - id: file-transfer
   config:
-    roots: []            # allow-list of absolute roots; [] means unrestricted
+    roots: []              # allow-list of absolute roots; [] means unrestricted
     allowUpload: true
     allowOverwrite: false
-    maxUploadBytes: 0    # 0 means no limit
+    maxUploadBytes: 0      # 0 means no limit
+    archiveMaxFiles: 20000
+    archiveMaxBytes: 0     # 0 means no limit
+    compressionLevel: 6    # 0-9, deflate level used by the ZIP route
 ```
 
 | Opción | Predeterminado | Significado |
 | --- | --- | --- |
-| `roots` | `[]` | Cuando no está vacía, todo destino de descarga y de carga debe resolverse —symlinks incluidos— dentro de una de estas raíces. Cualquier otra cosa recibe `403 outside-roots`. |
+| `roots` | `[]` | Cuando no está vacía, todo destino de descarga, de carga y de archivado debe resolverse —symlinks incluidos— dentro de una de estas raíces. Cualquier otra cosa recibe `403 outside-roots`. |
 | `allowUpload` | `true` | Ponlo en `false` para eliminar la ruta de carga por completo (`403 upload-disabled`). |
 | `allowOverwrite` | `false` | Cuando está desactivado, nunca se reemplaza un nombre existente; en su lugar se usa un `name-N.ext` libre. |
 | `maxUploadBytes` | `0` | Rechaza los cuerpos más grandes con `413 upload-too-large` y borra el archivo parcial. |
+| `archiveMaxFiles` | `20000` | Se niega a comprimir un árbol con más entradas (`413 archive-too-large`). |
+| `archiveMaxBytes` | `0` | Se niega a comprimir un árbol cuyos archivos superen este presupuesto; `0` desactiva la comprobación. |
+| `compressionLevel` | `6` | Nivel de deflate para las entradas del archivo comprimido; `0` almacena sin comprimir. |
 
 ## API HTTP
 
-Dos rutas, ambas bajo `/api/` y ambas requieren una Connection autenticada. Útiles desde una terminal, un script o un agente:
+Tres rutas, todas bajo `/api/` y todas requieren una Connection autenticada. Útiles desde una terminal, un script o un agente:
 
 ```sh
 # download (streams to stdout; add -r 0-1023 for a range)
@@ -117,6 +132,9 @@ curl -O -J 'https://host/api/dsh-file-transfer/download?path=/abs/report.pdf'
 curl -X POST -H 'content-type: application/octet-stream' \
   --data-binary @report.pdf \
   'https://host/api/dsh-file-transfer/upload?dir=/abs/dir&name=report.pdf'
+
+# zip a directory (any name; defaults to the directory basename)
+curl -OJ 'https://host/api/dsh-file-transfer/archive?path=/abs/reports'
 ```
 
 Una carga correcta responde:
@@ -142,6 +160,9 @@ Los fallos usan el mismo envoltorio que el resto del harness:
 | `upload-disabled` | 403 | `allowUpload: false`. |
 | `name-exhausted` | 409 | Los 10 000 nombres candidatos ya estaban ocupados. |
 | `upload-too-large` | 413 | El cuerpo superó `maxUploadBytes`. |
+| `archive-too-large` | 413 | El árbol superó `archiveMaxFiles` / `archiveMaxBytes`, o una entrada supera ZIP32. |
+| `archive-unreadable` | 413 | No se pudo leer un directorio del árbol. |
+| `archive-failed` | 500 | No se pudo producir el archivo comprimido. |
 | `write-failed` | 500 | El host no pudo escribir el archivo. |
 
 ## Modelo de seguridad
@@ -150,6 +171,7 @@ Los fallos usan el mismo envoltorio que el resto del harness:
 - La **resolución de rutas** hace pasar toda ruta enviada por el navegador por `realpath`, así que los segmentos `..` y los symlinks se resuelven *antes* de la comprobación de `roots`. Un symlink que apunta fuera de una raíz permitida se rechaza, y una prueba unitaria lo verifica.
 - Los **nombres de archivo** se reducen a un único segmento de ruta: `../../etc/passwd` pasa a ser `passwd` y aterriza dentro del directorio elegido. Verificado de extremo a extremo, no solo en una prueba unitaria.
 - Las **escrituras** son atómicas desde el punto de vista del lector (`.dsh-part-*` y luego rename), y nunca pisan un archivo existente salvo que lo pidas.
+- Los **archivos comprimidos** se construyen con un recorrido de directorios que omite symlinks y archivos especiales, así que un enlace dentro de un workspace no puede arrastrar un archivo de fuera a la descarga. El recorrido tiene su tope antes de transmitir un solo byte.
 
 El plugin se ejecuta con los privilegios del propio proceso del harness. `roots` es la perilla para ofrecer una superficie más acotada cuando el harness es compartido, y `allowUpload: false` desactiva la ruta de escritura por completo.
 
@@ -175,12 +197,13 @@ node --check lib/index.js && node --check lib/client.js
 node --test test/host.test.mjs
 ```
 
-Las pruebas unitarias ejercitan los handlers exportados con objetos `Request` estándar, así que los rangos, las disposiciones, la sanitización de nombres, la aplicación de las raíces, el comportamiento de sobrescritura, los límites de tamaño y los escapes por symlink se comprueban todos sin levantar un perfil. Ocho casos, sin necesidad de montar un arnés de fixtures.
+Las pruebas unitarias ejercitan los handlers exportados con objetos `Request` estándar, así que los rangos, las disposiciones, la sanitización de nombres, la aplicación de las raíces, el comportamiento de sobrescritura, los límites de tamaño, los escapes por symlink y los topes de archivado se comprueban todos sin levantar un perfil. Quince casos; los de ZIP se validan con `zipfile.testzip()` de Python, que recorre el CRC de cada entrada.
+
+Los controles del árbol no tienen pruebas automatizadas en el navegador: leen los atributos `data-files-entry` / `data-files-path` del árbol de archivos incluido, y por eso mismo siguen funcionando si cambian las tripas del árbol. Si tocas ese cableado, compruébalo a mano contra un workspace real.
 
 ## Hoja de ruta
 
-- Descarga de directorios como un único ZIP.
-- Carga en el directorio que el árbol muestra en ese momento (no solo en la raíz del workspace), además de arrastrar y soltar.
+- Selección múltiple: comprimir o descargar varias filas a la vez.
 - Un control de descarga en las tarjetas de archivos entregados. Hoy `deliverables.file.actions` entrega una URL de acción interna en lugar de una ruta del sistema de archivos, así que esto necesita soporte del upstream.
 
 ## Contribuir
@@ -190,7 +213,7 @@ Los issues y pull requests son bienvenidos. Dos cosas que conviene saber antes d
 - **Ejecuta las pruebas.** `node --test test/host.test.mjs` debe seguir en verde.
 - **Mantén las traducciones sincronizadas.** El README existe en seis idiomas y todos pretenden describir el mismo plugin; si cambias el comportamiento, actualiza la traducción que puedas escribir y dilo en el PR, y las demás pueden seguir después.
 
-Procura mantener la superficie pequeña. Todo el valor de este plugin está en hacer dos cosas de forma predecible sobre el explorador de archivos de DSH, no en convertirse en un IDE.
+Procura mantener la superficie pequeña. Todo el valor de este plugin está en hacer unas pocas cosas de forma predecible sobre el explorador de archivos de DSH, no en convertirse en un IDE.
 
 ## Licencia
 

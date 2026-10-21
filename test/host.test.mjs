@@ -7,13 +7,25 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { execFileSync } from 'node:child_process'
+
 import {
+  ARCHIVE_PATH,
   DOWNLOAD_PATH,
   UPLOAD_PATH,
+  handleArchive,
   handleDownload,
   handleUpload,
   resolveConfig,
@@ -254,5 +266,189 @@ test('upload refuses to follow a symlink out of the allowed roots', async () => 
   } finally {
     ws.cleanup()
     outside.cleanup()
+  }
+})
+
+
+const ZIP_INSPECT = `
+import json, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    bad = archive.testzip()
+    names = sorted(archive.namelist())
+    data = {}
+    for name in names:
+        if name.endswith('/'):
+            continue
+        data[name] = archive.read(name).decode('utf-8', 'replace')
+print(json.dumps({'bad': bad, 'names': names, 'data': data}, ensure_ascii=False))
+`
+
+function archiveUrl(dir, name) {
+  const url = new URL(BASE + ARCHIVE_PATH)
+  url.searchParams.set('path', dir)
+  if (name !== undefined) url.searchParams.set('name', name)
+  return url.toString()
+}
+
+function inspectZip(zipPath) {
+  return JSON.parse(execFileSync('python3', ['-c', ZIP_INSPECT, zipPath], { encoding: 'utf8' }))
+}
+
+test('archive streams a valid ZIP with CJK names, nesting and empty entries', async () => {
+  const ws = workspace()
+  try {
+    writeFileSync(join(ws.root, 'a.txt'), 'alpha\n')
+    writeFileSync(join(ws.root, '中文 名.md'), '# 标题\n')
+    writeFileSync(join(ws.root, 'empty.txt'), '')
+    mkdirSync(join(ws.root, 'sub', 'nested'), { recursive: true })
+    writeFileSync(join(ws.root, 'sub', 'b.txt'), 'beta\n')
+    writeFileSync(join(ws.root, 'sub', 'nested', 'c.bin'), Buffer.from([0, 1, 2, 255]))
+    mkdirSync(join(ws.root, 'emptydir'))
+    symlinkSync('/etc/hostname', join(ws.root, 'escape-link'))
+
+    const response = await handleArchive(new Request(archiveUrl(ws.root)), resolveConfig({}))
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-type'), 'application/zip')
+    assert.match(response.headers.get('content-disposition'), /filename\*=UTF-8''/)
+
+    const zipPath = join(ws.root, 'out.zip')
+    writeFileSync(zipPath, Buffer.from(await response.arrayBuffer()))
+    const report = inspectZip(zipPath)
+
+    assert.equal(report.bad, null, 'zipfile.testzip() must report no corrupt entry')
+    assert.deepEqual(report.names, [
+      'a.txt',
+      'empty.txt',
+      'emptydir/',
+      'sub/',
+      'sub/b.txt',
+      'sub/nested/',
+      'sub/nested/c.bin',
+      '中文 名.md',
+    ])
+    assert.equal(report.data['a.txt'], 'alpha\n')
+    assert.equal(report.data['sub/b.txt'], 'beta\n')
+    assert.equal(report.data['中文 名.md'], '# 标题\n')
+    assert.equal(report.data['empty.txt'], '')
+    assert.equal(report.names.includes('escape-link'), false, 'symlinks must be skipped')
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test('archive names the download and answers HEAD without a body', async () => {
+  const ws = workspace()
+  try {
+    mkdirSync(join(ws.root, '报告 目录'))
+    writeFileSync(join(ws.root, '报告 目录', 'x.txt'), 'x')
+    const options = resolveConfig({})
+
+    const explicit = await handleArchive(new Request(archiveUrl(join(ws.root, '报告 目录'), '季度汇总')), options)
+    const disposition = explicit.headers.get('content-disposition')
+    assert.match(disposition, /filename="[\x20-\x7e_]+\.zip"/)
+    assert.equal(decodeURIComponent(disposition.split("filename*=UTF-8''")[1]), '季度汇总.zip')
+
+    const fallback = await handleArchive(new Request(archiveUrl(join(ws.root, '报告 目录'))), options)
+    assert.equal(
+      decodeURIComponent(fallback.headers.get('content-disposition').split("filename*=UTF-8''")[1]),
+      '报告 目录.zip',
+    )
+
+    const head = await handleArchive(new Request(archiveUrl(join(ws.root, '报告 目录')), { method: 'HEAD' }), options)
+    assert.equal(head.status, 200)
+    assert.equal(await head.text(), '')
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test('archive refuses files, missing paths and out-of-root directories', async () => {
+  const ws = workspace()
+  try {
+    writeFileSync(join(ws.root, 'plain.txt'), 'x')
+    const options = resolveConfig({})
+
+    const notDir = await handleArchive(new Request(archiveUrl(join(ws.root, 'plain.txt'))), options)
+    assert.equal(notDir.status, 400)
+    assert.equal((await notDir.json()).error.code, 'not-a-directory')
+
+    const missing = await handleArchive(new Request(archiveUrl(join(ws.root, 'nope'))), options)
+    assert.equal(missing.status, 404)
+
+    const scoped = resolveConfig({ roots: [join(ws.root, 'only')] })
+    mkdirSync(join(ws.root, 'only'))
+    const denied = await handleArchive(new Request(archiveUrl(ws.root)), scoped)
+    assert.equal(denied.status, 403)
+    assert.equal((await denied.json()).error.code, 'outside-roots')
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test('archive enforces the file and byte caps', async () => {
+  const ws = workspace()
+  try {
+    writeFileSync(join(ws.root, 'one.txt'), 'one')
+    writeFileSync(join(ws.root, 'two.txt'), 'two')
+
+    const byCount = await handleArchive(new Request(archiveUrl(ws.root)), resolveConfig({ archiveMaxFiles: 1 }))
+    assert.equal(byCount.status, 413)
+    assert.equal((await byCount.json()).error.code, 'archive-too-large')
+
+    const byBytes = await handleArchive(new Request(archiveUrl(ws.root)), resolveConfig({ archiveMaxBytes: 2 }))
+    assert.equal(byBytes.status, 413)
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test('archive of an empty directory is a valid empty ZIP', async () => {
+  const ws = workspace()
+  try {
+    const response = await handleArchive(new Request(archiveUrl(ws.root)), resolveConfig({}))
+    const zipPath = join(ws.root, 'empty.zip')
+    writeFileSync(zipPath, Buffer.from(await response.arrayBuffer()))
+    const report = inspectZip(zipPath)
+    assert.equal(report.bad, null)
+    assert.deepEqual(report.names, [])
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test('upload into a nested directory lands beside its siblings', async () => {
+  const ws = workspace()
+  try {
+    mkdirSync(join(ws.root, 'reports', '2026'), { recursive: true })
+    const response = await handleUpload(
+      new Request(uploadUrl(join(ws.root, 'reports', '2026'), 'q4.txt'), {
+        method: 'POST',
+        body: Buffer.from('q4 numbers'),
+      }),
+      resolveConfig({}),
+    )
+    assert.equal(response.status, 200)
+    assert.equal(readFileSync(join(ws.root, 'reports', '2026', 'q4.txt'), 'utf8'), 'q4 numbers')
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test('archive tears down cleanly when the consumer cancels mid-stream', async () => {
+  const ws = workspace()
+  try {
+    for (let index = 0; index < 24; index += 1) {
+      writeFileSync(join(ws.root, `part-${index}.bin`), Buffer.alloc(65536, index))
+    }
+    const response = await handleArchive(new Request(archiveUrl(ws.root)), resolveConfig({}))
+    assert.equal(response.status, 200)
+    const reader = response.body.getReader()
+    await reader.read()
+    await reader.cancel()
+    // An unhandled rejection from the torn-down pipeline would fail this run.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.ok(true)
+  } finally {
+    ws.cleanup()
   }
 })

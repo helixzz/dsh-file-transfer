@@ -6,14 +6,14 @@
 [![DSH 0.2.0-rc.2 verified](https://img.shields.io/badge/DeepSeek%20Harness-0.2.0--rc.2%20verified-4dabf7)](https://github.com/deepseek-ai/deepseek-harness)
 [![No build step](https://img.shields.io/badge/build-none-brightgreen)](#开发)
 
-**从 DSH 的 Web 侧边栏把文件下载出来，也把文件上传回工作区 —— 走的是远程连接，不只是本机。**
+**从 DSH 的 Web 侧边栏把文件下载出来、把文件上传回工作区，还能把整个目录打包带走 —— 走的是远程连接，不只是本机。**
 
-DeepSeek Harness 自带一个能浏览、能预览工作区的侧边栏文件树，但两个方向都是只读的。本插件补上的就是缺的那两个控件：
+DeepSeek Harness 自带一个能浏览、能预览工作区的侧边栏文件树，但两个方向都是只读的。本插件补上的就是缺的那几个控件：
 
 | | |
 | --- | --- |
-| ![右侧边栏的文件标签页，上传按钮就在重新读取旁边](docs/screenshot-files.png) | ![预览中的文本文件，下载按钮在预览标题栏里](docs/screenshot-download.png) |
-| 文件树头部的 **⬆ 上传** —— 把选中的文件送进工作区 | 预览标题栏的 **⬇ 下载** —— 把打开的文件存到本机 |
+| ![右侧边栏的文件标签页，重新读取旁边是上传、目标目录和打包](docs/screenshot-files.png) | ![预览中的文本文件，下载按钮在预览标题栏里](docs/screenshot-download.png) |
+| 文件树头部的 **⬆ 上传** 与 **🗜 打包** —— 把文件送进你选中的目录，或把整个目录拿走 | 预览标题栏的 **⬇ 下载** —— 把打开的文件存到本机 |
 
 ## 为什么需要它
 
@@ -40,6 +40,15 @@ DeepSeek Harness 自带一个能浏览、能预览工作区的侧边栏文件树
 - 先写成同目录的 `.dsh-part-*`，流结束后才改名就位 —— 中断的上传不会在正式文件名下留下半截内容。
 - 绝不覆盖。再次上传 `report.pdf` 会变成 `report-1.pdf`。
 - 可选的体积上限（`maxUploadBytes`）：超限直接拒收，自己清理干净。
+- **目标是「你正在看的那个目录」**，不只是工作区根：点一下目录行（点文件则用它所在的目录），按钮就跟着走；旁边的胶囊始终显示目标名。
+- **把文件拖到文件树上**：拖到目录行就进那个目录，拖到文件行就用它的父目录，拖到空白处就用根目录。拖动时指针下的行会描边。
+
+**🗜 目录打包**
+
+- 一键把选中的目录变成单个压缩包：递归、中文名不乱码、空目录保留、符号链接跳过。
+- 边压边传 —— 压缩包不会先在宿主内存里攒成一整块。
+- 直接按 ZIP 规范手写（data descriptor + UTF-8 名称标志位），所以插件**至今仍是零运行时依赖**。
+- 默认上限两万个文件，可另设字节预算；单个条目超过 4 GiB 会被拒绝（ZIP32 表达不了）。
 
 **两者共同**
 
@@ -67,7 +76,7 @@ systemctl --user restart deepseek-harness.service   # 或你平时启动 dsh web
 
 ……或者，如果你的 profile 跑在 `patchReload: live` 下，让加载器自己拾取新 bundle，刷新页面即可。（本插件在它诞生那台机器上就是这样部署的 —— 无需重启。）
 
-打开一个会话、展开右侧边栏、点「文件」标签页：`⬆ 上传` 就在「重新读取」旁边。打开任意文件：`⬇ 下载` 就在「打开方式」旁边。
+打开一个会话、展开右侧边栏、点「文件」标签页：`⬆ 上传` 和 `🗜 打包` 就在「重新读取」旁边，两者之间的胶囊写着它们会作用的目录。打开任意文件：`⬇ 下载` 就在「打开方式」旁边。
 
 ## 反向代理
 
@@ -92,10 +101,13 @@ $ curl -o /dev/null -w '%{http_code}\n' \
 ```yaml
 - id: file-transfer
   config:
-    roots: []            # 允许的绝对根目录白名单；[] 表示不限制
+    roots: []              # 允许的绝对根目录白名单；[] 表示不限制
     allowUpload: true
     allowOverwrite: false
-    maxUploadBytes: 0    # 0 表示不限
+    maxUploadBytes: 0      # 0 表示不限
+    archiveMaxFiles: 20000
+    archiveMaxBytes: 0     # 0 表示不限
+    compressionLevel: 6    # 0-9，打包路由使用的 deflate 等级
 ```
 
 | 选项 | 默认值 | 含义 |
@@ -104,10 +116,13 @@ $ curl -o /dev/null -w '%{http_code}\n' \
 | `allowUpload` | `true` | 置 `false` 可整体关闭上传路由（`403 upload-disabled`）。 |
 | `allowOverwrite` | `false` | 关闭时同名文件绝不替换，改为使用空闲的 `name-N.ext`。 |
 | `maxUploadBytes` | `0` | 超出则以 `413 upload-too-large` 拒收，并删掉写了一半的文件。 |
+| `archiveMaxFiles` | `20000` | 目录条目超过此数拒绝打包（`413 archive-too-large`）。 |
+| `archiveMaxBytes` | `0` | 目录内文件总字节超过此预算拒绝打包；`0` 关闭该检查。 |
+| `compressionLevel` | `6` | 压缩包条目的 deflate 等级；`0` 表示只存储不压缩。 |
 
 ## HTTP API
 
-两条路由都在 `/api/` 下，都要求已认证的 Connection。终端、脚本、agent 都能直接用：
+三条路由都在 `/api/` 下，都要求已认证的 Connection。终端、脚本、agent 都能直接用：
 
 ```sh
 # 下载（流式输出到 stdout；加 -r 0-1023 即 Range 请求）
@@ -117,6 +132,9 @@ curl -O -J 'https://host/api/dsh-file-transfer/download?path=/abs/report.pdf'
 curl -X POST -H 'content-type: application/octet-stream' \
   --data-binary @report.pdf \
   'https://host/api/dsh-file-transfer/upload?dir=/abs/dir&name=report.pdf'
+
+# 打包目录（可指定名称；默认用目录名）
+curl -OJ 'https://host/api/dsh-file-transfer/archive?path=/abs/reports'
 ```
 
 上传成功时返回：
@@ -142,6 +160,9 @@ curl -X POST -H 'content-type: application/octet-stream' \
 | `upload-disabled` | 403 | `allowUpload: false`。 |
 | `name-exhausted` | 409 | 10000 个候选名字都被占用了。 |
 | `upload-too-large` | 413 | 请求体超过 `maxUploadBytes`。 |
+| `archive-too-large` | 413 | 目录超过 `archiveMaxFiles` / `archiveMaxBytes`，或单个条目超出 ZIP32 上限。 |
+| `archive-unreadable` | 413 | 目录树里有子目录无法读取。 |
+| `archive-failed` | 500 | 压缩包无法生成。 |
 | `write-failed` | 500 | 宿主写入失败。 |
 
 ## 安全模型
@@ -150,6 +171,7 @@ curl -X POST -H 'content-type: application/octet-stream' \
 - **路径解析**对浏览器传来的每个路径都做 `realpath`，`..` 段与符号链接会在 `roots` 检查**之前**被展开。指向允许范围之外的符号链接会被拒绝，单元测试对此有断言。
 - **文件名**会被压成单个路径段：`../../etc/passwd` 变成 `passwd`，落在你指定的目录里。这条是端到端验证过的，不只是单元测试。
 - **写入**从读者视角看是原子的（先 `.dsh-part-*` 再改名），且除非你明确要求，绝不覆盖已有文件。
+- **打包**基于一次目录遍历，跳过符号链接与特殊文件 —— 工作区里的一个链接没法把外部文件拽进压缩包。遍历在任何字节被送出之前就完成上限检查。
 
 插件以 harness 进程自身的权限运行。harness 被多人共用时，`roots` 是收窄暴露面的旋钮；`allowUpload: false` 可以彻底关掉写入路径。
 
@@ -175,12 +197,13 @@ node --check lib/index.js && node --check lib/client.js
 node --test test/host.test.mjs
 ```
 
-单元测试用标准 `Request` 对象直接驱动导出的 handler —— Range、disposition、文件名消毒、根目录约束、覆盖行为、体积上限、符号链接逃逸全都能在不起 profile 的情况下验证。八个用例，不需要额外的测试夹具。
+单元测试用标准 `Request` 对象直接驱动导出的 handler —— Range、disposition、文件名消毒、根目录约束、覆盖行为、体积上限、符号链接逃逸、打包上限全都能在不起 profile 的情况下验证。十五个用例；其中 ZIP 的几条由 Python 的 `zipfile.testzip()` 逐条校验 CRC。
+
+文件树那套控件没有自动化浏览器测试：它读的是出货文件树的 `data-files-entry` / `data-files-path` 属性（也正因为如此，树内部改实现它也能跟着活）。改动这条线时，请对着真实工作区手工验一遍。
 
 ## 路线图
 
-- 目录打包成单个 ZIP 下载。
-- 上传到文件树当前所在的目录（而不只是工作区根），以及拖拽上传。
+- 多选：一次打包或下载多行。
 - 交付卡片上的下载控件。`deliverables.file.actions` 目前只给一个内部 action URL、不给文件系统路径，所以这一项需要上游先提供抓手。
 
 ## 参与贡献
@@ -190,7 +213,7 @@ node --test test/host.test.mjs
 - **跑测试。** `node --test test/host.test.mjs` 必须保持全绿。
 - **保持各语言 README 同步。** 这份文档有六种语言，它们描述的是同一个插件；如果你改了行为，请更新你能写的那份翻译并在 PR 里说明，其余的可以随后跟上。
 
-也请克制功能边界。这个插件的全部价值在于它在 DSH 自带文件浏览器之上稳定地做两件事，而不是长成一个 IDE。
+也请克制功能边界。这个插件的全部价值在于它在 DSH 自带文件浏览器之上稳定地做那几件事，而不是长成一个 IDE。
 
 ## 许可
 

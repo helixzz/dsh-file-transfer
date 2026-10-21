@@ -6,14 +6,14 @@
 [![DSH 0.2.0-rc.2 verified](https://img.shields.io/badge/DeepSeek%20Harness-0.2.0--rc.2%20verified-4dabf7)](https://github.com/deepseek-ai/deepseek-harness)
 [![No build step](https://img.shields.io/badge/build-none-brightgreen)](#development)
 
-**DSH Web sidebar에서 파일을 내려받고, 원격 연결에서도 — localhost가 아니라도 — 파일을 다시 workspace로 업로드합니다.**
+**DSH Web sidebar에서 파일을 꺼내고, 파일을 다시 workspace로 업로드하고, 폴더 전체를 ZIP으로 묶으세요 — localhost뿐 아니라 원격 연결에서도.**
 
-DeepSeek Harness에는 workspace를 둘러보고 미리 볼 수 있는 sidebar 파일 트리가 있지만, 양방향 모두 읽기 전용입니다. 이 plugin은 빠져 있던 두 가지 컨트롤을 추가합니다:
+DeepSeek Harness에는 workspace를 둘러보고 미리 볼 수 있는 sidebar 파일 트리가 있지만, 양방향 모두 읽기 전용입니다. 이 plugin은 빠져 있던 컨트롤을 추가합니다:
 
 | | |
 | --- | --- |
-| ![오른쪽 sidebar의 파일 탭. 새로고침 버튼 옆에 Upload 컨트롤이 있다](docs/screenshot-files.png) | ![미리 보기 중인 텍스트 파일. 미리보기 헤더에 Download 컨트롤이 있다](docs/screenshot-download.png) |
-| 파일 트리 헤더의 **⬆ Upload** — 고른 파일을 workspace로 보냅니다 | 미리보기 헤더의 **⬇ Download** — 열려 있는 파일을 내 컴퓨터에 저장합니다 |
+| ![오른쪽 sidebar의 파일 탭. 새로고침 버튼 옆에 Upload, 대상 폴더, ZIP 컨트롤이 있다](docs/screenshot-files.png) | ![미리 보기 중인 텍스트 파일. 미리보기 헤더에 Download 컨트롤이 있다](docs/screenshot-download.png) |
+| 파일 트리 헤더의 **⬆ Upload**와 **🗜 ZIP** — 고른 폴더로 파일을 보내거나, 폴더를 통째로 가져옵니다 | 미리보기 헤더의 **⬇ Download** — 열려 있는 파일을 내 컴퓨터에 저장합니다 |
 
 ## 왜 만들었나
 
@@ -40,6 +40,15 @@ headless 장비에서 harness를 돌리고 브라우저로 접속한다면, 매�
 - 먼저 `.dsh-part-*` 형제 파일에 쓰고 stream이 끝난 뒤에야 제자리로 rename하므로, 중단된 업로드가 실제 이름 아래 잘린 파일을 남기는 일이 없습니다.
 - 절대 덮어쓰지 않습니다. 두 번째 `report.pdf`는 `report-1.pdf`가 됩니다.
 - 선택적 크기 상한(`maxUploadBytes`)은 초과한 본문을 거부하고 뒷정리까지 합니다.
+- **지금 보고 있는 폴더가 대상입니다**, workspace 루트만이 아니라: 폴더 행(또는 부모를 쓰려면 파일)을 클릭하면 버튼이 따라가고, 옆의 chip이 항상 목적지를 알려 줍니다.
+- **트리로 파일을 drag-and-drop하세요.** 폴더 행에 떨어뜨리면 그 폴더로, 파일 행에 떨어뜨리면 그 부모로, 빈 공간에 떨어뜨리면 루트로 업로드합니다. 드래그하는 동안 포인터 아래 행에 외곽선이 표시됩니다.
+
+**🗜 폴더를 ZIP으로 묶기**
+
+- 클릭 한 번이면 선택한 폴더가 하나의 아카이브가 됩니다: 재귀적이고, CJK 이름이 보존되며, 빈 디렉터리도 남고, symlink는 건너뜁니다.
+- 스트리밍하면서 그때그때 deflate합니다 — 아카이브가 호스트 메모리에 하나의 덩어리로 올라가지 않습니다.
+- ZIP 규격에 직접 맞춰 작성하므로(data descriptor와 UTF-8 이름 플래그), plugin은 런타임 의존성 0개로 계속 배포됩니다.
+- 기본 20 000개 파일 상한에 선택적 바이트 예산이 붙습니다. 단일 항목이 4 GiB를 넘으면 ZIP32가 표현할 수 없으므로 거부합니다.
 
 **공통**
 
@@ -67,7 +76,7 @@ systemctl --user restart deepseek-harness.service   # or however you run dsh web
 
 …또는 프로필이 `patchReload: live`로 동작한다면 로더가 새 번들을 집어가도록 두고 페이지를 새로고침하기만 하면 됩니다. (이 plugin이 처음 작성된 장비에서 배포되는 방식이 바로 이것입니다 — 재시작이 필요 없습니다.)
 
-세션을 열고 오른쪽 sidebar를 펼친 뒤 **file** 탭을 고르세요. `⬆ Upload`는 새로고침 버튼 옆에 있습니다. 아무 파일이나 열면 `⬇ Download`가 "open with" 컨트롤 옆에 있습니다.
+세션을 열고 오른쪽 sidebar를 펼친 뒤 **file** 탭을 고르세요. `⬆ Upload`와 `🗜 ZIP`이 새로고침 버튼 옆에 있고, 그 사이의 chip이 두 컨트롤이 동작할 폴더를 알려 줍니다. 아무 파일이나 열면 `⬇ Download`가 "open with" 컨트롤 옆에 있습니다.
 
 ## 리버스 프록시 뒤에서
 
@@ -92,22 +101,28 @@ $ curl -o /dev/null -w '%{http_code}\n' \
 ```yaml
 - id: file-transfer
   config:
-    roots: []            # allow-list of absolute roots; [] means unrestricted
+    roots: []              # allow-list of absolute roots; [] means unrestricted
     allowUpload: true
     allowOverwrite: false
-    maxUploadBytes: 0    # 0 means no limit
+    maxUploadBytes: 0      # 0 means no limit
+    archiveMaxFiles: 20000
+    archiveMaxBytes: 0     # 0 means no limit
+    compressionLevel: 6    # 0-9, deflate level used by the ZIP route
 ```
 
 | 옵션 | 기본값 | 의미 |
 | --- | --- | --- |
-| `roots` | `[]` | 비어 있지 않으면 모든 다운로드·업로드 대상이 symlink까지 포함해 이 루트 중 하나 안으로 해석되어야 합니다. 그 외에는 `403 outside-roots`입니다. |
+| `roots` | `[]` | 비어 있지 않으면 모든 다운로드·업로드·아카이브 대상이 symlink까지 포함해 이 루트 중 하나 안으로 해석되어야 합니다. 그 외에는 `403 outside-roots`입니다. |
 | `allowUpload` | `true` | `false`로 두면 업로드 라우트가 통째로 사라집니다 (`403 upload-disabled`). |
 | `allowOverwrite` | `false` | 꺼져 있으면 기존 이름을 절대 대체하지 않고 비어 있는 `name-N.ext`를 사용합니다. |
 | `maxUploadBytes` | `0` | 이보다 큰 본문은 `413 upload-too-large`로 거부하고 부분 파일을 삭제합니다. |
+| `archiveMaxFiles` | `20000` | 항목이 더 많은 트리는 ZIP으로 만들지 않습니다 (`413 archive-too-large`). |
+| `archiveMaxBytes` | `0` | 파일 합계가 이 예산을 넘는 트리는 ZIP으로 만들지 않습니다. `0`은 검사를 끕니다. |
+| `compressionLevel` | `6` | 아카이브 항목의 deflate 레벨입니다. `0`은 압축 없이 저장합니다. |
 
 ## HTTP API
 
-두 개의 라우트가 있고 둘 다 `/api/` 아래에 있으며, 둘 다 인증된 Connection을 요구합니다. 터미널이나 스크립트, agent에서 유용합니다:
+세 개의 라우트가 있고 모두 `/api/` 아래에 있으며, 모두 인증된 Connection을 요구합니다. 터미널이나 스크립트, agent에서 유용합니다:
 
 ```sh
 # download (streams to stdout; add -r 0-1023 for a range)
@@ -117,6 +132,9 @@ curl -O -J 'https://host/api/dsh-file-transfer/download?path=/abs/report.pdf'
 curl -X POST -H 'content-type: application/octet-stream' \
   --data-binary @report.pdf \
   'https://host/api/dsh-file-transfer/upload?dir=/abs/dir&name=report.pdf'
+
+# zip a directory (any name; defaults to the directory basename)
+curl -OJ 'https://host/api/dsh-file-transfer/archive?path=/abs/reports'
 ```
 
 업로드가 성공하면 이렇게 응답합니다:
@@ -142,6 +160,9 @@ curl -X POST -H 'content-type: application/octet-stream' \
 | `upload-disabled` | 403 | `allowUpload: false`입니다. |
 | `name-exhausted` | 409 | 후보 이름 10 000개가 모두 사용 중이었습니다. |
 | `upload-too-large` | 413 | 본문이 `maxUploadBytes`를 초과했습니다. |
+| `archive-too-large` | 413 | 트리가 `archiveMaxFiles` / `archiveMaxBytes`를 초과했거나, 항목 하나가 ZIP32를 넘습니다. |
+| `archive-unreadable` | 413 | 트리 안의 디렉터리를 읽지 못했습니다. |
+| `archive-failed` | 500 | 아카이브를 만들지 못했습니다. |
 | `write-failed` | 500 | 호스트가 파일을 쓰지 못했습니다. |
 
 ## 보안 모델
@@ -150,6 +171,7 @@ curl -X POST -H 'content-type: application/octet-stream' \
 - **경로 해석**은 브라우저가 보낸 모든 경로를 `realpath`에 통과시키므로, `..` 세그먼트와 symlink가 `roots` 검사 *이전에* 해석됩니다. 허용된 루트 밖을 가리키는 symlink는 거부되며, 이를 단위 테스트가 검증합니다.
 - **파일 이름**은 단일 경로 세그먼트로 축소됩니다: `../../etc/passwd`는 `passwd`가 되어 선택한 디렉터리 안에 들어갑니다. 단위 테스트만이 아니라 처음부터 끝까지 검증했습니다.
 - **쓰기**는 읽는 쪽에서 보면 원자적이며(`.dsh-part-*` 후 rename), 요청하지 않는 한 기존 파일을 덮어쓰지 않습니다.
+- **아카이브**는 symlink와 특수 파일을 건너뛰는 디렉터리 탐색으로 만들어지므로, workspace 안의 링크가 바깥 파일을 다운로드로 끌어올 수 없습니다. 탐색은 바이트를 한 개도 streaming하기 전에 상한이 적용됩니다.
 
 plugin은 harness 프로세스의 권한 그대로 실행됩니다. harness를 공유한다면 `roots`가 노출 면을 좁히는 손잡이가 되고, `allowUpload: false`는 쓰기 경로를 완전히 끕니다.
 
@@ -175,12 +197,13 @@ node --check lib/index.js && node --check lib/client.js
 node --test test/host.test.mjs
 ```
 
-단위 테스트는 표준 `Request` 객체로 내보낸 핸들러를 구동합니다 — 따라서 range, disposition, 이름 정리, 루트 강제, 덮어쓰기 동작, 크기 제한, symlink 탈출이 모두 프로필을 띄우지 않고 검사됩니다. 여덟 개의 케이스, fixture harness가 필요 없습니다.
+단위 테스트는 표준 `Request` 객체로 내보낸 핸들러를 구동합니다 — 따라서 range, disposition, 이름 정리, 루트 강제, 덮어쓰기 동작, 크기 제한, symlink 탈출, 아카이브 상한이 모두 프로필을 띄우지 않고 검사됩니다. 열다섯 개의 케이스이며, ZIP 케이스는 Python의 `zipfile.testzip()`으로 검증하므로 모든 항목의 CRC를 순회합니다.
+
+트리 컨트롤에는 자동화된 브라우저 테스트가 없습니다. 이 컨트롤은 배포되는 파일 트리의 `data-files-entry` / `data-files-path` 속성을 읽으며, 트리 내부가 바뀌어도 계속 동작하는 이유도 그것입니다. 그 연결을 건드렸다면 실제 workspace에서 직접 확인하세요.
 
 ## 로드맵
 
-- 디렉터리를 단일 ZIP으로 다운로드.
-- 트리가 현재 보여 주는 디렉터리로 업로드(workspace 루트만이 아니라), 그리고 드래그 앤 드롭.
+- 다중 선택: 여러 행을 한 번에 ZIP으로 묶거나 다운로드.
 - 전달된 파일 카드의 다운로드 컨트롤. 현재 `deliverables.file.actions`는 파일시스템 경로가 아니라 내부 action URL을 넘겨주므로, 이에는 업스트림 affordance가 필요합니다.
 
 ## 기여
@@ -190,7 +213,7 @@ node --test test/host.test.mjs
 - **테스트를 실행하세요.** `node --test test/host.test.mjs`는 계속 통과해야 합니다.
 - **번역을 최신으로 유지하세요.** README는 여섯 개 언어로 존재하며 모두 같은 plugin을 설명해야 합니다. 동작을 바꿨다면 자신이 쓸 수 있는 번역을 갱신하고 PR에서 그렇게 밝혀 주세요. 나머지는 뒤따라오면 됩니다.
 
-표면은 작게 유지해 주세요. 이 plugin의 가치는 DSH 자체 파일 브라우저 위에서 두 가지를 예측 가능하게 해낸다는 데 있지, IDE로 자라나는 데 있지 않습니다.
+표면은 작게 유지해 주세요. 이 plugin의 가치는 DSH 자체 파일 브라우저 위에서 몇 가지를 예측 가능하게 해낸다는 데 있지, IDE로 자라나는 데 있지 않습니다.
 
 ## 라이선스
 
